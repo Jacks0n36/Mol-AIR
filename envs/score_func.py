@@ -260,21 +260,41 @@ def get_and_write_configuration(mol, ion, run_dir):
         json.dump(config, f)
     return config_path
 
-def extract_results(run_dir):
-    ...
+def collect_results(run_dir):
+    output_dir = get_output_dir(run_dir)
+    return {file.split(".")[0]: np.load(file) for file in os.listdir(output_dir)}
+
+def extract_from_results(results, extractant):
+    data = results[extractant]
+    files = data.files
+    return [data[file] for file in files]
 
 def clean_up(run_dir):
-    ... 
+    os.removedirs(run_dir)
+
+# this should be implemented closer to the actual mlip being used.
+# we could just hack it out here,
+# but then we would be doing this piece of logic on a case-by-case basis.
+def get_ion_spe(ion):
+    ...
+
+def get_binding_energy_with_ion(cage_spe, system_spe, ion):
+    ion_spe = get_ion_spe("Na")
+    return system_spe - (cage_spe + ion_spe)
+
 
 # working_dir = "/scratch/user/jaschwedler/tmp"
 working_dir = "/home/schwe/tmp"
-def run_pipeline(mol):
+def run_pipeline(mol, ion):
     run_dir = generate_run_dir(working_dir)
     config_path = get_and_write_configuration(mol, ion, run_dir)
     # cmd = get_container_run_cmd(config_path)
     # subprocess.run(cmd)
-    extract_results(run_dir)
+    results = collect_results(run_dir)
+    energies = extract_from_results(results, "energies")
+    binding_energy = get_binding_energy_with_ion(*energies, ion)
     clean_up(run_dir)
+    return binding_energy
 
 
 FAILED_TO_CALCULATE_BINDING_ENERGY = 100.0
@@ -283,7 +303,7 @@ def calculate_binding_energy(smiles):
     # smiles guaranteed to be type: str
     mol, smiles_canon, done = sanitize_smiles(smiles)
     if done:
-        binding_energy = run_pipeline(mol)
+        binding_energy = run_pipeline(mol, ion)
         return binding_energy
     return FAILED_TO_CALCULATE_BINDING_ENERGY
 
