@@ -17,21 +17,17 @@
 #
 
 
-from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors
 import pickle
-
 import math
-from collections import defaultdict
-
-import os.path as op
+import os
+import subprocess
+import json
 
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import MolFromSmiles as smi2mol
-from rdkit.Chem import MolToSmiles as mol2smi
-from rdkit.Chem import Descriptors
+from rdkit.Chem import MolFromSmiles, MolToSmiles, rdMolDescriptors, Descriptors, AllChem
 
+from src.util import configuration_builder
 
 _fscores = None
 
@@ -40,7 +36,7 @@ def readFragmentScores(name='fpscores'):
     global _fscores
     # generate the full path filename:
     if name == "fpscores":
-        name = op.join(op.dirname(__file__), f"data/{name}")
+        name = os.path.join(os.path.dirname(__file__), f"data/{name}")
     _fscores = pickle.load(gzip.open('%s.pkl.gz' % name))
     outDict = {}
     for i in _fscores:
@@ -145,8 +141,8 @@ def sanitize_smiles(smi):
     conversion_successful (bool): True/False to indicate if conversion was  successful 
     '''
     try:
-        mol = smi2mol(smi, sanitize=True)
-        smi_canon = mol2smi(mol, isomericSmiles=False, canonical=True)
+        mol = MolFromSmiles(smi, sanitize=True)
+        smi_canon = MolToSmiles(mol, isomericSmiles=False, canonical=True)
         return (mol, smi_canon, True)
     except:
         return (None, None, False)
@@ -199,6 +195,100 @@ def calculate_pLogP(smiles):
 
     return logP_norm[0] - SAS_norm[0] - RingP_norm[0]
 
+def get_container_run_cmd(config):
+    return ["singularity", "run", "fairchem.sif", "evaluate", config]
+
+def embed_mol(mol):
+    mol = Chem.AddHs(mol)
+    AllChem.EmbedMolecule(mol, Chem.AllChem.ETKDGv3())
+    conf = mol.GetConformer()
+    return mol, conf
+
+def compute_ion_placement(mol, conf):
+    ri = mol.GetRingInfo()
+    ai = ri.AtomRings()
+    longest_length = 0
+    longest_ring = None
+    for ring in ai:
+        if len(ring) > longest_length:
+            longest_length = len(ring)
+            longest_ring = ring
+    coords = np.array([list(conf.GetAtomPosition(i)) for i in longest_ring])
+    center = coords.mean(axis=0)
+    return center
+    
+def strip_smiles(mol, ion):
+    mol, conf = embed_mol(mol)
+    atom_symbols = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(mol.GetNumAtoms())]
+    coordinates = [conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
+    if ion:
+        ion_pos = compute_ion_placement(mol, conf)
+        atom_symbols = atom_symbols + [ion]
+        coordinates = coordinates + [ion_pos]
+    return atom_symbols, coordinates
+
+def generate_run_dir(working_dir):
+    id = int(np.random.rand()*10**8)
+    return os.path.join(working_dir, str(id))
+
+output_dir = "output"
+def get_output_dir(loc):
+    output_path = os.path.join(loc, "output")
+    os.makedirs(output_path, exist_ok=True)
+    return output_path
+
+input_dir = "input"
+def get_input_dir(loc):
+    input_path = os.path.join(loc, "input")
+    os.makedirs(input_path, exist_ok=True)
+    return input_path
+
+config_file = "config.json"
+atoms_file = "atoms.npz"
+coordinates_file = "coordinates.npz"
+def get_and_write_configuration(mol, ion, run_dir):
+    atom_symbols, coordinates = strip_smiles(mol, ion)
+    input_dir = get_input_dir(run_dir)
+    output_dir = get_output_dir(run_dir)
+    atoms_path = os.path.join(input_dir, atoms_file)
+    coordinates_path = os.path.join(input_dir, coordinates_file)
+    np.savez(atoms_path, atom_symbols)
+    np.savez(coordinates_path, coordinates)
+    config = configuration_builder(method="optimize", atoms=atoms_path, coordinates=coordinates_path, output_dir=output_dir, type="ase")
+    config_path = os.path.join(input_dir, config_file)
+    with open(config_path, "w") as f:
+        json.dump(config, f)
+    return config_path
+
+def extract_results(run_dir):
+    ...
+
+def clean_up(run_dir):
+    ... 
+
+# working_dir = "/scratch/user/jaschwedler/tmp"
+working_dir = "/home/schwe/tmp"
+def run_pipeline(mol):
+    run_dir = generate_run_dir(working_dir)
+    config_path = get_and_write_configuration(mol, ion, run_dir)
+    # cmd = get_container_run_cmd(config_path)
+    # subprocess.run(cmd)
+    extract_results(run_dir)
+    clean_up(run_dir)
+
+
+FAILED_TO_CALCULATE_BINDING_ENERGY = 100.0
+ion = "Na"
+def calculate_binding_energy(smiles):
+    # smiles guaranteed to be type: str
+    mol, smiles_canon, done = sanitize_smiles(smiles)
+    if done:
+        binding_energy = run_pipeline(mol)
+        return binding_energy
+    return FAILED_TO_CALCULATE_BINDING_ENERGY
+
+
+print(calculate_binding_energy("C1COCCOCCN2CCOCCOCCN1CCOCCOCC2"))
 
 #
 #  Copyright (c) 2013, Novartis Institutes for BioMedical Research Inc.
