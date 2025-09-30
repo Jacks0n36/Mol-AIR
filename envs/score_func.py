@@ -199,10 +199,9 @@ def get_container_run_cmd(config):
     return ["singularity", "run", "fairchem.sif", "evaluate", config]
 
 def embed_mol(mol):
-    mol = Chem.AddHs(mol)
     AllChem.EmbedMolecule(mol, Chem.AllChem.ETKDGv3())
     conf = mol.GetConformer()
-    return mol, conf
+    return conf
 
 def compute_ion_placement(mol, conf):
     ri = mol.GetRingInfo()
@@ -216,15 +215,30 @@ def compute_ion_placement(mol, conf):
     coords = np.array([list(conf.GetAtomPosition(i)) for i in longest_ring])
     center = coords.mean(axis=0)
     return center
+
+def strip_ion(ion):
+    ion_mol = MolFromSmiles(f"[{ion}+]")
+    ion_conf = embed_mol(ion_mol)
+    ion_symbols = list(ion_mol.GetAtomWithIdx(i).GetSymbol() for i in range(ion_mol.GetNumAtoms()))
+    ion_coordinates = list(ion_conf.GetAtomPosition(i) for i in range(ion_mol.GetNumAtoms()))
+    return ion_symbols, ion_coordinates
     
-def strip_smiles(mol, ion):
-    mol, conf = embed_mol(mol)
+    
+def strip_smiles_and_partition(mol, ion):
+    conf = embed_mol(mol)
     atom_symbols = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(mol.GetNumAtoms())]
     coordinates = [conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
+    all_atom_symbols = [list(atom_symbols)]
+    all_coordinates = [list(coordinates)]
     if ion:
         ion_pos = compute_ion_placement(mol, conf)
         atom_symbols = atom_symbols + [ion]
         coordinates = coordinates + [ion_pos]
+        all_atom_symbols.append(list(atom_symbols))
+        all_coordinates.append(list(coordinates))
+    ion_symbols, ion_coordinates = strip_ion(ion)
+    all_atom_symbols.append(ion_symbols)
+    all_coordinates.append(ion_coordinates)
     return atom_symbols, coordinates
 
 def generate_run_dir(working_dir):
@@ -247,14 +261,18 @@ config_file = "config.json"
 atoms_file = "atoms.npz"
 coordinates_file = "coordinates.npz"
 def get_and_write_configuration(mol, ion, run_dir):
-    atom_symbols, coordinates = strip_smiles(mol, ion)
+    atom_symbols, coordinates = strip_smiles_and_partition(mol, ion)
     input_dir = get_input_dir(run_dir)
     output_dir = get_output_dir(run_dir)
     atoms_path = os.path.join(input_dir, atoms_file)
     coordinates_path = os.path.join(input_dir, coordinates_file)
     np.savez(atoms_path, atom_symbols)
     np.savez(coordinates_path, coordinates)
-    config = configuration_builder(method="optimize", atoms=atoms_path, coordinates=coordinates_path, output_dir=output_dir, type="ase")
+    config = configuration_builder(method="optimize", 
+                                   atoms=atoms_path, 
+                                   coordinates=coordinates_path, 
+                                   output_dir=output_dir, 
+                                   type="ase")
     config_path = os.path.join(input_dir, config_file)
     with open(config_path, "w") as f:
         json.dump(config, f)
@@ -272,17 +290,6 @@ def extract_from_results(results, extractant):
 def clean_up(run_dir):
     os.removedirs(run_dir)
 
-# this should be implemented closer to the actual mlip being used.
-# we could just hack it out here,
-# but then we would be doing this piece of logic on a case-by-case basis.
-def get_ion_spe(ion):
-    ...
-
-def get_binding_energy_with_ion(cage_spe, system_spe, ion):
-    ion_spe = get_ion_spe("Na")
-    return system_spe - (cage_spe + ion_spe)
-
-
 # working_dir = "/scratch/user/jaschwedler/tmp"
 working_dir = "/home/schwe/tmp"
 def run_pipeline(mol, ion):
@@ -291,10 +298,9 @@ def run_pipeline(mol, ion):
     # cmd = get_container_run_cmd(config_path)
     # subprocess.run(cmd)
     results = collect_results(run_dir)
-    energies = extract_from_results(results, "energies")
-    binding_energy = get_binding_energy_with_ion(*energies, ion)
+    cage_spe, system_spe, ion_spe = extract_from_results(results, "energies")
     clean_up(run_dir)
-    return binding_energy
+    return system_spe - (cage_spe + ion_spe)
 
 
 FAILED_TO_CALCULATE_BINDING_ENERGY = 100.0
