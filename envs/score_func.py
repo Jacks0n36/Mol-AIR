@@ -223,23 +223,25 @@ def strip_ion(ion):
     ion_coordinates = list(ion_conf.GetAtomPosition(i) for i in range(ion_mol.GetNumAtoms()))
     return ion_symbols, ion_coordinates
     
-    
-def strip_smiles_and_partition(mol, ion):
+def strip_smiles_and_partition(mol, ion, charge):
     conf = embed_mol(mol)
     atom_symbols = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(mol.GetNumAtoms())]
     coordinates = [conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
     all_atom_symbols = [list(atom_symbols)]
     all_coordinates = [list(coordinates)]
+    charges = [cage_charge]
     if ion:
         ion_pos = compute_ion_placement(mol, conf)
         atom_symbols = atom_symbols + [ion]
         coordinates = coordinates + [ion_pos]
         all_atom_symbols.append(list(atom_symbols))
         all_coordinates.append(list(coordinates))
-    ion_symbols, ion_coordinates = strip_ion(ion)
-    all_atom_symbols.append(ion_symbols)
-    all_coordinates.append(ion_coordinates)
-    return atom_symbols, coordinates
+        charges.append(charge + cage_charge)
+        ion_symbols, ion_coordinates = strip_ion(ion)
+        all_atom_symbols.append(ion_symbols)
+        all_coordinates.append(ion_coordinates)
+        charges.append(charge)
+    return all_atom_symbols, all_coordinates, charges
 
 def generate_run_dir(working_dir):
     id = int(np.random.rand()*10**8)
@@ -260,19 +262,20 @@ def get_input_dir(loc):
 config_file = "config.json"
 atoms_file = "atoms.npz"
 coordinates_file = "coordinates.npz"
-def get_and_write_configuration(mol, ion, run_dir):
-    atom_symbols, coordinates = strip_smiles_and_partition(mol, ion)
+def get_and_write_configuration(mol, ion, charge, run_dir):
+    atom_symbols, coordinates, charges = strip_smiles_and_partition(mol, ion, charge)
     input_dir = get_input_dir(run_dir)
     output_dir = get_output_dir(run_dir)
     atoms_path = os.path.join(input_dir, atoms_file)
     coordinates_path = os.path.join(input_dir, coordinates_file)
-    np.savez(atoms_path, atom_symbols)
-    np.savez(coordinates_path, coordinates)
+    np.savez(atoms_path, *atom_symbols)
+    np.savez(coordinates_path, *coordinates)
     config = configuration_builder(method="optimize", 
                                    atoms=atoms_path, 
                                    coordinates=coordinates_path, 
                                    output_dir=output_dir, 
-                                   type="ase")
+                                   optimizer="ase",
+                                   charge=charges)
     config_path = os.path.join(input_dir, config_file)
     with open(config_path, "w") as f:
         json.dump(config, f)
@@ -292,9 +295,9 @@ def clean_up(run_dir):
 
 # working_dir = "/scratch/user/jaschwedler/tmp"
 working_dir = "/home/schwe/tmp"
-def run_pipeline(mol, ion):
+def run_pipeline(mol, ion, charge):
     run_dir = generate_run_dir(working_dir)
-    config_path = get_and_write_configuration(mol, ion, run_dir)
+    config_path = get_and_write_configuration(mol, ion, charge, run_dir)
     # cmd = get_container_run_cmd(config_path)
     # subprocess.run(cmd)
     results = collect_results(run_dir)
@@ -305,11 +308,13 @@ def run_pipeline(mol, ion):
 
 FAILED_TO_CALCULATE_BINDING_ENERGY = 100.0
 ion = "Na"
+ion_charge = 1
+cage_charge = 0
 def calculate_binding_energy(smiles):
     # smiles guaranteed to be type: str
     mol, smiles_canon, done = sanitize_smiles(smiles)
     if done:
-        binding_energy = run_pipeline(mol, ion)
+        binding_energy = run_pipeline(mol, ion, ion_charge)
         return binding_energy
     return FAILED_TO_CALCULATE_BINDING_ENERGY
 
