@@ -313,6 +313,7 @@ cage_charge = 0
 def calculate_binding_energy(smiles):
     # smiles guaranteed to be type: str
     mol, smiles_canon, done = sanitize_smiles(smiles)
+    mol = Chem.AddHs(mol)
     if done:
         binding_energy = run_pipeline(mol, ion, ion_charge)
         return binding_energy
